@@ -4,6 +4,10 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+# 在第6行添加缺失的导入
+import json
+from kivy.graphics import Color, Rectangle
+from kivy.uix.behaviors import FocusBehavior
 
 # Kivy相关导入
 from kivy.app import App
