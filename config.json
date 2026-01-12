@@ -1,0 +1,55 @@
+{
+    "app": {
+        "name": "音乐管理器",
+        "version": "2.0.0",
+        "first_run": true,
+        "theme": "auto",
+        "language": "auto"
+    },
+    "player": {
+        "volume": 80,
+        "playback_speed": 1.0,
+        "fade_duration": 1.0,
+        "crossfade": false,
+        "repeat_mode": "none",
+        "shuffle": false,
+        "gapless_playback": true,
+        "high_quality": false
+    },
+    "equalizer": {
+        "enabled": false,
+        "preset": "flat",
+        "bass_boost": 0,
+        "virtualizer": 0,
+        "reverb": 0
+    },
+    "library": {
+        "auto_scan": true,
+        "scan_directories": [],
+        "exclude_patterns": [".*"],
+        "update_interval": 24,
+        "keep_organized": false
+    },
+    "notification": {
+        "enabled": true,
+        "show_album_art": true,
+        "show_controls": true,
+        "persistent": true
+    },
+    "sleep_timer": {
+        "default_duration": 30,
+        "default_action": "stop",
+        "volume_fade": true
+    },
+    "gestures": {
+        "enabled": true,
+        "swipe_threshold": 50,
+        "double_tap_action": "play_pause",
+        "long_press_action": "show_menu"
+    },
+    "cache": {
+        "max_size_mb": 100,
+        "preload_next": true,
+        "keep_cover_cache": true
+    }
+}
