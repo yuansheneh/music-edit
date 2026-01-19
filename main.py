@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-音乐元数据管理器 - Android版
+音乐元数据管理器 - Android版（修正版）
+修复了权限处理、文件扫描、UI交互等问题
 """
 
 from kivy.app import App
@@ -11,14 +12,14 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
-from kivy.uix.popup import Popup
-from kivy.uix.filechooser import FileChooserListView
+from kivy.uix.modalview import ModalView
 from kivy.properties import StringProperty, ListProperty, ObjectProperty
 from kivy.animation import Animation
 from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.core.window import Window
 from kivy.utils import platform
+from kivy.graphics import Color, RoundedRectangle
 
 import os
 import json
@@ -38,7 +39,7 @@ except ImportError:
 
 
 class MusicFile:
-    """音乐文件类,封装元数据"""
+    """音乐文件类,封装元数据（已修正）"""
     
     def __init__(self, filepath):
         self.filepath = filepath
@@ -64,41 +65,62 @@ class MusicFile:
                 self.title = self.filename
                 return
             
-            # 提取元数据
-            self.title = audio.get('title', [self.filename])[0] if 'title' in audio else self.filename
-            self.artist = audio.get('artist', ['未知艺术家'])[0] if 'artist' in audio else '未知艺术家'
-            self.album = audio.get('album', ['未知专辑'])[0] if 'album' in audio else '未知专辑'
-            self.year = audio.get('date', [''])[0] if 'date' in audio else ''
-            self.genre = audio.get('genre', [''])[0] if 'genre' in audio else ''
+            # 提取元数据（增强异常处理）
+            self.title = self._safe_get_tag(audio, 'title', self.filename)
+            self.artist = self._safe_get_tag(audio, 'artist', '未知艺术家')
+            self.album = self._safe_get_tag(audio, 'album', '未知专辑')
+            self.year = self._safe_get_tag(audio, 'date', '')
+            self.genre = self._safe_get_tag(audio, 'genre', '')
             
             # 获取时长
-            if hasattr(audio.info, 'length'):
+            if hasattr(audio, 'info') and hasattr(audio.info, 'length'):
                 duration_sec = int(audio.info.length)
                 minutes = duration_sec // 60
                 seconds = duration_sec % 60
                 self.duration = f"{minutes}:{seconds:02d}"
                 
         except Exception as e:
-            print(f"加载元数据失败: {e}")
+            print(f"加载元数据失败 {self.filename}: {e}")
             self.title = self.filename
     
+    def _safe_get_tag(self, audio, tag_name, default_value):
+        """安全获取标签值"""
+        try:
+            if tag_name in audio:
+                value = audio[tag_name]
+                if isinstance(value, list) and len(value) > 0:
+                    return str(value[0])
+                elif isinstance(value, str):
+                    return value
+            return default_value
+        except:
+            return default_value
+    
     def save_metadata(self, title, artist, album, year, genre):
-        """保存音频元数据"""
+        """保存音频元数据（增强错误处理）"""
         if not MUTAGEN_AVAILABLE:
             return False
         
         try:
             audio = MutagenFile(self.filepath, easy=True)
             if audio is None:
+                print(f"无法打开文件: {self.filepath}")
                 return False
             
-            audio['title'] = title
-            audio['artist'] = artist
-            audio['album'] = album
+            # 保存元数据
+            audio['title'] = [title] if title else []
+            audio['artist'] = [artist] if artist else []
+            audio['album'] = [album] if album else []
+            
             if year:
-                audio['date'] = year
+                audio['date'] = [year]
+            elif 'date' in audio:
+                del audio['date']
+                
             if genre:
-                audio['genre'] = genre
+                audio['genre'] = [genre]
+            elif 'genre' in audio:
+                del audio['genre']
             
             audio.save()
             
@@ -110,6 +132,10 @@ class MusicFile:
             self.genre = genre
             
             return True
+            
+        except PermissionError:
+            print(f"权限错误: 无法写入文件 {self.filepath}")
+            return False
         except Exception as e:
             print(f"保存元数据失败: {e}")
             return False
@@ -129,7 +155,7 @@ class MusicFile:
 
 
 class MusicListItem(BoxLayout):
-    """音乐列表项组件"""
+    """音乐列表项组件（优化动画）"""
     title = StringProperty("")
     artist = StringProperty("")
     duration = StringProperty("")
@@ -147,14 +173,18 @@ class MusicListItem(BoxLayout):
         self.padding = dp(10)
         self.spacing = dp(10)
         
-        # 淡入动画
+        # 优化：延迟播放淡入动画
+        self.opacity = 1  # 默认可见
+        
+    def play_fade_in(self):
+        """播放淡入动画（按需调用）"""
         self.opacity = 0
-        anim = Animation(opacity=1, duration=0.3)
+        anim = Animation(opacity=1, duration=0.2)
         anim.start(self)
 
 
 class MainScreen(Screen):
-    """主屏幕 - 显示音乐列表"""
+    """主屏幕（修正文件扫描逻辑）"""
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -164,28 +194,57 @@ class MainScreen(Screen):
     
     def init_ui(self, dt):
         """初始化UI"""
-        self.load_music_files()
+        # 请求权限后再加载
+        if platform == 'android':
+            self.request_permissions()
+            Clock.schedule_once(lambda dt: self.load_music_files(), 1)
+        else:
+            self.load_music_files()
+    
+    def request_permissions(self):
+        """请求Android权限（修正版）"""
+        if platform == 'android':
+            try:
+                from android.permissions import request_permissions, Permission
+                
+                # 基本权限
+                permissions = [
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.WRITE_EXTERNAL_STORAGE
+                ]
+                
+                request_permissions(permissions)
+                
+                # Android 11+ 需要额外处理
+                try:
+                    from android import api_version
+                    if api_version >= 30:
+                        # 可以引导用户到设置授权 MANAGE_EXTERNAL_STORAGE
+                        print("Android 11+: 可能需要手动授予所有文件访问权限")
+                except:
+                    pass
+                    
+            except Exception as e:
+                print(f"权限请求失败: {e}")
     
     def get_music_directories(self):
-        """获取音乐目录路径"""
+        """获取音乐目录路径（增强兼容性）"""
         if platform == 'android':
-            from android.storage import primary_external_storage_path
-            from android.permissions import request_permissions, Permission
+            try:
+                from android.storage import primary_external_storage_path
+                storage_path = primary_external_storage_path()
+            except:
+                # 备用方案
+                storage_path = '/sdcard'
             
-            # 请求权限
-            request_permissions([
-                Permission.READ_EXTERNAL_STORAGE,
-                Permission.WRITE_EXTERNAL_STORAGE
-            ])
-            
-            storage_path = primary_external_storage_path()
             music_dirs = [
                 os.path.join(storage_path, 'Music'),
                 os.path.join(storage_path, 'Download'),
+                os.path.join(storage_path, 'Documents'),
                 storage_path
             ]
         else:
-            # 桌面系统的音乐目录
+            # 桌面系统
             home = str(Path.home())
             music_dirs = [
                 os.path.join(home, 'Music'),
@@ -196,27 +255,37 @@ class MainScreen(Screen):
         return [d for d in music_dirs if os.path.exists(d)]
     
     def load_music_files(self):
-        """加载音乐文件"""
+        """加载音乐文件（修正扫描深度）"""
         self.music_files = []
         audio_extensions = ('.mp3', '.flac', '.m4a', '.ogg', '.wav', '.opus')
         
         music_dirs = self.get_music_directories()
+        print(f"扫描目录: {music_dirs}")
         
         for music_dir in music_dirs:
             try:
                 for root, dirs, files in os.walk(music_dir):
+                    # 扫描当前目录的文件
                     for file in files:
                         if file.lower().endswith(audio_extensions):
-                            filepath = os.path.join(root, file)
-                            music_file = MusicFile(filepath)
-                            self.music_files.append(music_file)
+                            try:
+                                filepath = os.path.join(root, file)
+                                music_file = MusicFile(filepath)
+                                self.music_files.append(music_file)
+                            except Exception as e:
+                                print(f"加载文件失败 {file}: {e}")
                     
-                    # 只扫描第一层子目录以提高性能
-                    if root != music_dir:
-                        break
+                    # 限制扫描深度为1级子目录
+                    depth = root[len(music_dir):].count(os.sep)
+                    if depth >= 1:
+                        dirs[:] = []  # 清空dirs阻止更深层扫描
+                        
+            except PermissionError:
+                print(f"无权限访问: {music_dir}")
             except Exception as e:
                 print(f"扫描目录失败 {music_dir}: {e}")
         
+        print(f"找到 {len(self.music_files)} 个音频文件")
         self.filtered_files = self.music_files.copy()
         self.update_music_list()
     
@@ -227,10 +296,11 @@ class MainScreen(Screen):
         
         if not self.filtered_files:
             no_music_label = Label(
-                text="未找到音乐文件\n请将音乐放入Music或Download文件夹",
+                text="未找到音乐文件\n请将音乐放入Music或Download文件夹\n并确保已授予存储权限",
                 halign='center',
                 size_hint_y=None,
-                height=dp(100)
+                height=dp(100),
+                color=(0.4, 0.4, 0.4, 1)
             )
             container.add_widget(no_music_label)
             return
@@ -272,51 +342,73 @@ class MainScreen(Screen):
     def refresh_list(self):
         """刷新列表"""
         # 旋转动画
-        refresh_btn = self.ids.refresh_button
-        anim = Animation(rotation=360, duration=0.5)
-        anim.bind(on_complete=lambda *args: setattr(refresh_btn, 'rotation', 0))
-        anim.start(refresh_btn)
+        try:
+            refresh_btn = self.ids.refresh_button
+            anim = Animation(rotation=360, duration=0.5)
+            anim.bind(on_complete=lambda *args: setattr(refresh_btn, 'rotation', 0))
+            anim.start(refresh_btn)
+        except:
+            pass
         
         self.load_music_files()
 
 
 class DetailScreen(Screen):
-    """详情屏幕 - 显示和编辑元数据"""
+    """详情屏幕（修正Toast和安全检查）"""
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.current_music_file = None
     
     def set_music_file(self, music_file):
-        """设置当前音乐文件"""
+        """设置当前音乐文件（增加安全检查）"""
         self.current_music_file = music_file
         
-        # 更新UI
-        self.ids.title_input.text = music_file.title
-        self.ids.artist_input.text = music_file.artist
-        self.ids.album_input.text = music_file.album
-        self.ids.year_input.text = music_file.year
-        self.ids.genre_input.text = music_file.genre
-        self.ids.filename_label.text = f"文件名: {music_file.filename}"
-        self.ids.duration_label.text = f"时长: {music_file.duration}"
+        # 确保UI已初始化
+        if not hasattr(self, 'ids') or not self.ids:
+            Clock.schedule_once(lambda dt: self.set_music_file(music_file), 0.1)
+            return
+        
+        try:
+            # 更新UI
+            self.ids.title_input.text = music_file.title or ""
+            self.ids.artist_input.text = music_file.artist or ""
+            self.ids.album_input.text = music_file.album or ""
+            self.ids.year_input.text = music_file.year or ""
+            self.ids.genre_input.text = music_file.genre or ""
+            self.ids.filename_label.text = f"文件名: {music_file.filename}"
+            self.ids.duration_label.text = f"时长: {music_file.duration}"
+        except AttributeError as e:
+            print(f"UI未就绪: {e}")
+            Clock.schedule_once(lambda dt: self.set_music_file(music_file), 0.1)
     
     def save_metadata(self):
         """保存元数据"""
         if not self.current_music_file:
+            self.show_toast("没有选择文件", success=False)
             return
         
-        title = self.ids.title_input.text
-        artist = self.ids.artist_input.text
-        album = self.ids.album_input.text
-        year = self.ids.year_input.text
-        genre = self.ids.genre_input.text
-        
-        if self.current_music_file.save_metadata(title, artist, album, year, genre):
-            self.show_toast("保存成功!")
-            # 返回主屏幕
-            Clock.schedule_once(lambda dt: self.go_back(), 1)
-        else:
-            self.show_toast("保存失败,请检查权限")
+        try:
+            title = self.ids.title_input.text.strip()
+            artist = self.ids.artist_input.text.strip()
+            album = self.ids.album_input.text.strip()
+            year = self.ids.year_input.text.strip()
+            genre = self.ids.genre_input.text.strip()
+            
+            # 验证输入
+            if not title:
+                self.show_toast("标题不能为空", success=False)
+                return
+            
+            if self.current_music_file.save_metadata(title, artist, album, year, genre):
+                self.show_toast("保存成功!", success=True)
+                Clock.schedule_once(lambda dt: self.go_back(), 1)
+            else:
+                self.show_toast("保存失败,请检查权限", success=False)
+                
+        except Exception as e:
+            print(f"保存时发生错误: {e}")
+            self.show_toast("保存失败", success=False)
     
     def go_back(self):
         """返回主屏幕"""
@@ -326,24 +418,47 @@ class DetailScreen(Screen):
         main_screen = self.manager.get_screen('main')
         main_screen.update_music_list()
     
-    def show_toast(self, message):
-        """显示提示消息"""
-        toast = Label(
-            text=message,
+    def show_toast(self, message, success=True):
+        """显示提示消息（修正版）"""
+        toast_view = ModalView(
             size_hint=(None, None),
-            size=(dp(200), dp(50)),
-            pos_hint={'center_x': 0.5, 'center_y': 0.5}
+            size=(dp(250), dp(80)),
+            auto_dismiss=True,
+            background='',
+            background_color=(0, 0, 0, 0)
         )
         
-        popup = Popup(
-            content=toast,
-            size_hint=(None, None),
-            size=(dp(200), dp(100)),
-            auto_dismiss=True,
-            background_color=(0, 0, 0, 0.8)
+        # 创建带背景的容器
+        container = BoxLayout(orientation='vertical')
+        
+        # 绘制圆角背景
+        with container.canvas.before:
+            Color(0.2, 0.7, 0.3, 0.9) if success else Color(0.8, 0.3, 0.2, 0.9)
+            self.toast_rect = RoundedRectangle(
+                pos=container.pos, 
+                size=container.size,
+                radius=[dp(10),]
+            )
+        
+        def update_rect(instance, value):
+            self.toast_rect.pos = instance.pos
+            self.toast_rect.size = instance.size
+        
+        container.bind(pos=update_rect, size=update_rect)
+        
+        # 添加文字
+        label = Label(
+            text=message,
+            color=(1, 1, 1, 1),
+            font_size=dp(16),
+            bold=True
         )
-        popup.open()
-        Clock.schedule_once(lambda dt: popup.dismiss(), 1.5)
+        container.add_widget(label)
+        
+        toast_view.add_widget(container)
+        toast_view.open()
+        
+        Clock.schedule_once(lambda dt: toast_view.dismiss(), 1.5)
 
 
 class MusicMetadataApp(App):
@@ -362,11 +477,14 @@ class MusicMetadataApp(App):
     def on_start(self):
         """应用启动时"""
         if platform == 'android':
-            from android.permissions import request_permissions, Permission
-            request_permissions([
-                Permission.READ_EXTERNAL_STORAGE,
-                Permission.WRITE_EXTERNAL_STORAGE
-            ])
+            try:
+                from android.permissions import request_permissions, Permission
+                request_permissions([
+                    Permission.READ_EXTERNAL_STORAGE,
+                    Permission.WRITE_EXTERNAL_STORAGE
+                ])
+            except Exception as e:
+                print(f"权限请求失败: {e}")
 
 
 if __name__ == '__main__':
