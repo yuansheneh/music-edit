@@ -31,7 +31,7 @@ android.ndk = 25b
 orientation = portrait
 
 # 全屏
-fullscreen = 0
+fullscreen = 1
 
 # Android架构
 android.archs = arm64-v8a,armeabi-v7a
